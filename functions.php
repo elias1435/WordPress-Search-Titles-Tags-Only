@@ -1,13 +1,17 @@
 <?php
 // Keep search to posts only
 add_action('pre_get_posts', function ($q) {
-  if ( is_admin() || ! $q->is_search() ) return;
-  // If Elementor uses a custom query, removing is_main_query() helps apply to that too.
+  if (is_admin() || ! $q->is_main_query() || ! $q->is_search()) return;
+
   $q->set('post_type', 'post');
   $q->set('ignore_sticky_posts', true);
-});
 
-// Join tag tables so we can match tag names
+  // Force newest first (Elementor/others sometimes override this)
+  $q->set('orderby', 'date');
+  $q->set('order', 'DESC');
+}, 999);
+
+
 add_filter('posts_join', function ($join, $q) {
   if ( is_admin() || ! $q->is_search() ) return $join;
   global $wpdb;
@@ -19,7 +23,6 @@ add_filter('posts_join', function ($join, $q) {
   return $join;
 }, 10, 2);
 
-// NEW: Require ALL words overall, but each word may be in title OR in any tag
 add_filter('posts_search', function ($search, $q) {
   if ( is_admin() || ! $q->is_search() ) return $search;
 
@@ -34,7 +37,6 @@ add_filter('posts_search', function ($search, $q) {
   foreach ($terms as $term) {
     $like = '%' . $wpdb->esc_like($term) . '%';
 
-    // For this single term: match if title has it OR any tag name has it
     $per_term[] = $wpdb->prepare(
       "( $wpdb->posts.post_title LIKE %s OR EXISTS (
           SELECT 1
@@ -47,10 +49,8 @@ add_filter('posts_search', function ($search, $q) {
     );
   }
 
-  // ALL terms must pass
   $where_all_terms = '(' . implode(' AND ', $per_term) . ')';
 
-  // Completely replace default search fragment
   return " AND $where_all_terms ";
 }, 10, 2);
 
@@ -69,13 +69,12 @@ add_filter('posts_distinct', function ($distinct, $q) {
   return 'DISTINCT';
 }, 10, 2);
 
-// Optional: ranking (title starts-with > title contains > tag contains > recency)
 add_filter('posts_orderby', function ($orderby, $q) {
-  if ( is_admin() || ! $q->is_search() ) return $orderby;
+  if (is_admin() || ! $q->is_search() || ! $q->is_main_query()) return $orderby;
 
   global $wpdb;
-  $s = trim( (string) $q->get('s') );
-  if ( $s === '' ) return $orderby;
+  $s = trim((string) $q->get('s'));
+  if ($s === '') return $orderby;
 
   $starts = $wpdb->esc_like($s) . '%';
   $any    = '%' . $wpdb->esc_like($s) . '%';
@@ -95,5 +94,7 @@ add_filter('posts_orderby', function ($orderby, $q) {
     $starts, $any, $any
   );
 
-  return "$case, $wpdb->posts.post_date DESC";
-}, 10, 2);
+  // relevance bucket first (ASC), then newest first (DESC)
+  return "$case ASC, {$wpdb->posts}.post_date DESC";
+}, 9999, 2);
+
